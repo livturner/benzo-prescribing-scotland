@@ -174,29 +174,41 @@ hb_pop <- pop_data %>%
          str_starts(hb, "S08")) %>%   # exclude Scotland total
   select(hbt = hb, population = all_ages)
 
-hb_rates <- hb_totals %>% 
-  left_join(hb_pop, by = "hbt") %>% 
-  mutate(
-    days_in_period = 184,   # Jul–Dec 2025
-    ddds_per_1000_per_day = total_ddds / population / days_in_period * 1000
-  ) %>% 
-  arrange(desc(ddds_per_1000_per_day))
-
 hb_rates %>% 
-  ggplot(aes(x = ddds_per_1000_per_day, 
-             y = reorder(hb_name, ddds_per_1000_per_day))) +
-  geom_col(fill = "steelblue") +
-  geom_text(aes(label = round(ddds_per_1000_per_day, 1)), 
-            hjust = -0.2, size = 3.5) +
+  mutate(
+    hb_name = fct_reorder(hb_name, ddds_per_1000_per_day),
+    # Tag top/bottom for highlighting
+    highlight = case_when(
+      ddds_per_1000_per_day >= 17 ~ "high",
+      ddds_per_1000_per_day <= 10 ~ "low",
+      TRUE ~ "mid"
+    )
+  ) %>% 
+  ggplot(aes(x = ddds_per_1000_per_day, y = hb_name, fill = highlight)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%.1f", ddds_per_1000_per_day)),
+            hjust = -0.2, size = 3.3, colour = "grey30") +
+  scale_fill_manual(values = c("high" = "#B33A3A", 
+                               "mid" = "#7B9CC4", 
+                               "low" = "#4A6FA5"),
+                    guide = "none") +
+  scale_x_continuous(limits = c(0, 22), expand = c(0, 0)) +
   labs(
-    title = "Benzodiazepine and z-drug prescribing by NHS Scotland health board",
-    subtitle = "DDDs per 1,000 population per day, July–December 2025",
-    x = "DDDs per 1,000 population per day",
-    y = NULL,
-    caption = "Source: Public Health Scotland, NRS mid-year population estimates"
+    title = "Benzodiazepine and z-drug prescribing varies more than two-fold\nacross NHS Scotland health boards",
+    subtitle = "Defined daily doses per 1,000 population per day, July–December 2025",
+    x = NULL, y = NULL,
+    caption = "Source: Public Health Scotland prescribing data; National Records of Scotland mid-year population estimates"
   ) +
-  xlim(0, 22) +
-  theme_minimal()
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, lineheight = 1.2),
+    plot.subtitle = element_text(colour = "grey40", margin = margin(b = 12)),
+    plot.caption = element_text(colour = "grey50", size = 8, hjust = 0),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.y = element_text(colour = "grey20"),
+    axis.text.x = element_text(colour = "grey40")
+  )
 
 # Look at all "Data by Board" resources, sorted by date
 pres_resources <- list_resources("prescriptions-in-the-community")
@@ -327,3 +339,4 @@ trends %>%
   ) +
   theme_minimal() +
   theme(legend.position = "none")
+
