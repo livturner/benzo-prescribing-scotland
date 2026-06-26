@@ -308,35 +308,36 @@ trends <- all_periods %>%
     ddds_per_1000_per_day = total_ddds / population / days_in_period * 1000
   )
 
-trends %>% 
-  select(hb_name, period, ddds_per_1000_per_day) %>% 
-  pivot_wider(names_from = period, values_from = ddds_per_1000_per_day) %>% 
-  arrange(desc(`Jul-Dec 2025`))
-
-trends %>% 
+trends_plot <- trends %>% 
   mutate(
     period = factor(period, levels = c("Jan-Jun 2024", "Jul-Dec 2024",
                                        "Jan-Jun 2025", "Jul-Dec 2025"))
-  ) %>% 
-  ggplot(aes(x = period, y = ddds_per_1000_per_day, 
-             group = hb_name, colour = hb_name)) +
-  geom_line(linewidth = 0.8) +
-  geom_point(size = 1.5) +
-  # Label the lines at the right edge instead of using a legend
-  ggrepel::geom_text_repel(
-    data = . %>% filter(period == "Jul-Dec 2025"),
-    aes(label = hb_name),
-    nudge_x = 0.3, direction = "y", hjust = 0, size = 3,
-    segment.size = 0.2, segment.alpha = 0.4
-  ) +
-  scale_x_discrete(expand = expansion(add = c(0.5, 3))) +
-  labs(
-    title = "Benzodiazepine and z-drug prescribing trends across NHS Scotland",
-    subtitle = "DDDs per 1,000 population per day, by health board, 2024–2025",
-    x = NULL,
-    y = "DDDs per 1,000 population per day",
-    caption = "Source: Public Health Scotland, NRS mid-year population estimates"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "none")
+  )
 
+trends_plot %>% 
+  mutate(hb_name = fct_reorder(hb_name, -ddds_per_1000_per_day)) %>%
+  ggplot(aes(x = period, y = ddds_per_1000_per_day, group = 1)) +
+  # Faint reference: all boards in grey
+  geom_line(data = trends_plot %>% select(-hb_name), 
+            aes(group = hb_name), colour = "grey85", linewidth = 0.4) +
+  # The board's own line on top
+  geom_line(colour = "#4A6FA5", linewidth = 0.9) +
+  geom_point(colour = "#4A6FA5", size = 1.5) +
+  facet_wrap(~ hb_name, ncol = 4) +
+  scale_y_continuous(limits = c(5, 21), breaks = seq(5, 20, 5)) +
+  scale_x_discrete(labels = c("J-J\n2024", "J-D\n2024", "J-J\n2025", "J-D\n2025")) +
+  labs(
+    title = "Prescribing is falling across NHS Scotland,\nbut the geographic gap persists",
+    subtitle = "Defined daily doses per 1,000 population per day, by health board, 2024–2025",
+    x = NULL, y = "DDDs per 1,000 population per day",
+    caption = "Source: Public Health Scotland prescribing data; National Records of Scotland mid-year population estimates. Each panel shows one board (blue) against all others (grey)."
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, lineheight = 1.2),
+    plot.subtitle = element_text(colour = "grey40", margin = margin(b = 12)),
+    plot.caption = element_text(colour = "grey50", size = 8, hjust = 0),
+    strip.text = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(colour = "grey40", size = 8)
+  )
