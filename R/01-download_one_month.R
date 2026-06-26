@@ -197,3 +197,133 @@ hb_rates %>%
   ) +
   xlim(0, 22) +
   theme_minimal()
+
+# Look at all "Data by Board" resources, sorted by date
+pres_resources <- list_resources("prescriptions-in-the-community")
+
+pres_resources %>% 
+  filter(str_detect(resource_name, "Data by Board")) %>% 
+  arrange(resource_name) %>% 
+  select(resource_name, resource_id, last_modified) %>% 
+  print(n = Inf)
+
+process_period <- function(res_id, period_label, days_in_period) {
+  
+  message("Downloading: ", period_label)
+  
+  raw <- get_resource(res_id = res_id)
+  
+  raw %>% 
+    clean_names() %>% 
+    filter(prescribed_type == "VMP") %>% 
+    filter(str_starts(bnf_item_code, "0401")) %>% 
+    # Apply the same drug filter
+    filter(str_detect(bnf_item_description, drug_pattern)) %>% 
+    # Tag clinical group
+    mutate(
+      drug_group = case_when(
+        str_detect(bnf_item_description, "CLONAZEPAM") ~ "clonazepam (epilepsy)",
+        str_detect(bnf_item_description, "CHLORDIAZEPOXIDE") ~ "chlordiazepoxide (alcohol withdrawal)",
+        str_detect(bnf_item_description, "RECTAL|AMPOULES|RECTUBES") ~ "emergency/rescue",
+        str_detect(bnf_item_description, paste(z_drugs, collapse = "|")) ~ "z-drug",
+        TRUE ~ "anxiolytic/hypnotic benzo"
+      )
+    ) %>% 
+    # Filter to headline analysis
+    filter(drug_group %in% c("anxiolytic/hypnotic benzo", "z-drug")) %>% 
+    # Parse strength
+    mutate(
+      strength_raw = str_extract(bnf_item_description, "\\d+\\.?\\d*\\s?(MG|MICROGRAM)"),
+      strength_num = as.numeric(str_extract(strength_raw, "\\d+\\.?\\d*")),
+      strength_mg = if_else(str_detect(strength_raw, "MICROGRAM"), strength_num / 1000, strength_num),
+      volume_raw = str_extract(bnf_item_description, "/\\d*\\.?\\d*\\s?ML"),
+      volume_ml = as.numeric(str_extract(volume_raw, "\\d+\\.?\\d*")),
+      volume_ml = if_else(str_detect(bnf_item_description, "/ML") & is.na(volume_ml), 1, volume_ml),
+      mg_per_unit = if_else(is.na(volume_ml), strength_mg, strength_mg / volume_ml),
+      drug = str_extract(bnf_item_description, "^[A-Z]+")
+    ) %>% 
+    left_join(ddd_lookup, by = "drug") %>% 
+    mutate(
+      total_mg = paid_quantity * mg_per_unit,
+      ddds = total_mg / ddd_mg
+    ) %>% 
+    # Aggregate to HB
+    filter(str_starts(hbt, "S08")) %>% 
+    group_by(hbt) %>% 
+    summarise(total_ddds = sum(ddds, na.rm = TRUE), .groups = "drop") %>% 
+    left_join(hb_lookup, by = "hbt") %>% 
+    # Tag with period info
+    mutate(
+      period = period_label,
+      days_in_period = days_in_period
+    )
+}
+
+periods <- tribble(
+  ~res_id,                                ~period_label,    ~days_in_period,
+  "f0df380b-3f9b-4536-bb87-569e189b727a", "Jan-Jun 2024",   182,
+  "f3b9f2e2-66c0-4310-9b8e-734781d2ed0a", "Jul-Dec 2024",   184,
+  "9de908b3-9c28-4cc3-aa32-72350a0579d1", "Jan-Jun 2025",   181,
+  "83763a67-9c4d-43d3-89b2-18041a368a1c", "Jul-Dec 2025",   184
+)
+
+all_periods <- pmap_dfr(periods, process_period)
+
+all_periods %>% count(period)
+
+pop_by_year <- pop_data %>% 
+  clean_names() %>% 
+  filter(sex == "All", str_starts(hb, "S08")) %>% 
+  select(year, hbt = hb, population = all_ages)
+
+# What's the latest population year available?
+pop_by_year %>% count(year) %>% tail(5)
+
+# Tag each period with the year of population to use
+period_to_pop_year <- tribble(
+  ~period,          ~pop_year,
+  "Jan-Jun 2024",   2024,
+  "Jul-Dec 2024",   2024,
+  "Jan-Jun 2025",   2024,   # using 2024 as proxy
+  "Jul-Dec 2025",   2024
+)
+
+# Join everything together and compute rates
+trends <- all_periods %>% 
+  left_join(period_to_pop_year, by = "period") %>% 
+  left_join(pop_by_year, by = c("hbt", "pop_year" = "year")) %>% 
+  mutate(
+    ddds_per_1000_per_day = total_ddds / population / days_in_period * 1000
+  )
+
+trends %>% 
+  select(hb_name, period, ddds_per_1000_per_day) %>% 
+  pivot_wider(names_from = period, values_from = ddds_per_1000_per_day) %>% 
+  arrange(desc(`Jul-Dec 2025`))
+
+trends %>% 
+  mutate(
+    period = factor(period, levels = c("Jan-Jun 2024", "Jul-Dec 2024",
+                                       "Jan-Jun 2025", "Jul-Dec 2025"))
+  ) %>% 
+  ggplot(aes(x = period, y = ddds_per_1000_per_day, 
+             group = hb_name, colour = hb_name)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  # Label the lines at the right edge instead of using a legend
+  ggrepel::geom_text_repel(
+    data = . %>% filter(period == "Jul-Dec 2025"),
+    aes(label = hb_name),
+    nudge_x = 0.3, direction = "y", hjust = 0, size = 3,
+    segment.size = 0.2, segment.alpha = 0.4
+  ) +
+  scale_x_discrete(expand = expansion(add = c(0.5, 3))) +
+  labs(
+    title = "Benzodiazepine and z-drug prescribing trends across NHS Scotland",
+    subtitle = "DDDs per 1,000 population per day, by health board, 2024–2025",
+    x = NULL,
+    y = "DDDs per 1,000 population per day",
+    caption = "Source: Public Health Scotland, NRS mid-year population estimates"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
