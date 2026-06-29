@@ -2,6 +2,7 @@ library(tidyverse)
 library(janitor)
 library(phsopendata)
 library(here)
+library(readxl)
 
 resources <- list_resources("prescriptions-in-the-community")
 
@@ -316,12 +317,12 @@ trends_plot <- trends %>%
 
 trends_plot %>% 
   mutate(hb_name = fct_reorder(hb_name, -ddds_per_1000_per_day)) %>%
-  ggplot(aes(x = period, y = ddds_per_1000_per_day, group = 1)) +
-  # Faint reference: all boards in grey
-  geom_line(data = trends_plot %>% select(-hb_name), 
-            aes(group = hb_name), colour = "grey85", linewidth = 0.4) +
+  ggplot(aes(x = period, y = ddds_per_1000_per_day)) +
+  # Faint reference: all boards in grey, no facet
+  geom_line(data = trends_plot %>% rename(hb_facet = hb_name), 
+            aes(group = hb_facet), colour = "grey85", linewidth = 0.4) +
   # The board's own line on top
-  geom_line(colour = "#4A6FA5", linewidth = 0.9) +
+  geom_line(aes(group = hb_name), colour = "#4A6FA5", linewidth = 0.9) +
   geom_point(colour = "#4A6FA5", size = 1.5) +
   facet_wrap(~ hb_name, ncol = 4) +
   scale_y_continuous(limits = c(5, 21), breaks = seq(5, 20, 5)) +
@@ -340,4 +341,82 @@ trends_plot %>%
     strip.text = element_text(face = "bold", size = 9),
     panel.grid.minor = element_blank(),
     axis.text = element_text(colour = "grey40", size = 8)
+)
+
+
+
+hb4_rates <- read_excel("data/drug-related-deaths-data.xlsx",
+                        sheet = "Table_HB4",
+                        skip = 4) %>% clean_names()
+
+hb3_drugs <- read_excel("data/drug-related-deaths-data.xlsx",
+                        sheet = "Table_HB3",
+                        skip = 4) %>% clean_names()
+
+# HB3 — just the 2024 benzo columns
+deaths_2024 <- hb3_drugs %>%
+  filter(nhs_board_area != "Scotland") %>%
+  select(
+    hb_name = nhs_board_area,
+    deaths_all = all_drug_misuse_deaths,
+    deaths_any_benzo = any_benzodiazepine,
+    deaths_prescribed_benzo = any_prescribable_benzodiazepine_note_7,
+    deaths_diazepam = diazepam_note_8,
+    deaths_street_benzo = any_street_benzodiazepine_note_7
   )
+
+# HB4 — most recent 5-year rates
+deaths_rate_2024 <- hb4_rates %>%
+  filter(nhs_board_area != "Scotland",
+         five_year_period == "2020 - 2024") %>%
+  mutate(death_rate = as.numeric(age_standardised_rate_per_100_000_population)) %>%
+  select(hb_name = nhs_board_area, death_rate, total_deaths_5yr = total_number_of_deaths)
+
+deaths_2024
+deaths_rate_2024
+
+# Combine prescribing + deaths
+combined <- hb_rates %>%   # your prescribing data with ddds_per_1000_per_day
+  left_join(deaths_rate_2024, by = "hb_name") %>%
+  left_join(deaths_2024, by = "hb_name")
+
+# Compute rates
+combined_rates <- combined %>%
+  mutate(
+    prescribed_benzo_rate = deaths_prescribed_benzo / population * 100000,
+    street_benzo_rate = deaths_street_benzo / population * 100000
+  )
+
+p1 <- combined_rates %>%
+  filter(!is.na(prescribed_benzo_rate)) %>%
+  ggplot(aes(x = ddds_per_1000_per_day, y = prescribed_benzo_rate)) +
+  geom_point(colour = "#4A6FA5", size = 3) +
+  ggrepel::geom_text_repel(aes(label = hb_name), size = 3, colour = "grey25") +
+  labs(
+    title = "Prescribed benzodiazepine deaths",
+    x = "Prescribing rate (DDDs per 1,000 per day)",
+    y = "Deaths per 100,000 population, 2024",
+    caption = "Boards with fewer than ~5 deaths (Orkney, Shetland,\nBorders, Western Isles) have unreliable rates."
+  ) +
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 7, colour = "grey50", hjust = 0))
+
+p2 <- combined_rates %>%
+  filter(!is.na(street_benzo_rate)) %>%
+  ggplot(aes(x = ddds_per_1000_per_day, y = street_benzo_rate)) +
+  geom_smooth(method = "lm", se = FALSE, colour = "grey60", 
+              linetype = "dashed", linewidth = 0.6) +
+  geom_point(colour = "#B33A3A", size = 3) +
+  ggrepel::geom_text_repel(aes(label = hb_name), size = 3, colour = "grey25") +
+  labs(
+    title = "Street benzodiazepine deaths",
+    x = "Prescribing rate (DDDs per 1,000 per day)",
+    y = "Deaths per 100,000 population, 2024"
+  ) +
+  theme_minimal()
+
+p1 + p2 + plot_annotation(
+  title = "Two different drug death pathways across NHS Scotland",
+  subtitle = "Benzodiazepine prescribing rate (Jul–Dec 2025) vs benzodiazepine-implicated death rates (2024)",
+  caption = "Sources: PHS prescribing data; NRS drug-related deaths 2024; NRS population estimates."
+)
